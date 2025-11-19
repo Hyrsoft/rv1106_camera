@@ -1,9 +1,14 @@
-
 .vscode/
 .idea/
+luckfox_pico_rkmpi_example/
 
 opencv-mobile-4.12.0-luckfox-pico/
 opencv-mobile-4.12.0-luckfox-pico.zip
 
 opencv-mobile-4.10.0-luckfox-pico/
 opencv-mobile-4.10.0-luckfox-pico.zip
+
+build/
+cmake-build-*/
+
+.cache/

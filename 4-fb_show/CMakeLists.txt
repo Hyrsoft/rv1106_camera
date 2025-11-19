@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 3.15)
 project(fb_show)
 add_definitions(-DRV1106_1103)
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 
 # Enable compile command to ease indexing with e.g. clangd
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
 # opencv-mobile
-set(OpenCV_DIR "../common/opencv-mobile-4.10.0-luckfox-pico/lib/cmake/opencv4")
+set(OpenCV_DIR "../opencv-mobile-4.10.0-luckfox-pico/lib/cmake/opencv4")
 find_package(OpenCV REQUIRED)
 message(STATUS "Debug OpenCV_LIBS = ${OpenCV_LIBS}")
 

@@ -8,6 +8,7 @@
 |  2   | rtsp_opencv_mobile         | rtsp推流                   | 取自[幸狐提供的例程](https://github.com/LuckfoxTECH/luckfox_pico_rkmpi_example.git) |
 |  3   | rtsp_opencv_mobile_capture | rtsp推流+帧率标注          | 取自[幸狐提供的例程](https://github.com/LuckfoxTECH/luckfox_pico_rkmpi_example.git) |
 |  4   | fb_show                    | 捕获视频实时显示在fb设备上 | 默认分辨率为720x720                                          |
+|. 5.  |rtsp_yolov5                 | 部署yolov5推理并推流.      | 取自[幸狐提供的例程](https://github.com/LuckfoxTECH/luckfox_pico_rkmpi_example.git) |
 
 ## 一、操作指南
 
