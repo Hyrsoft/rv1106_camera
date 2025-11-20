@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(rtsp_yolov5)
+project(rtsp_retinaface_osd)
 add_definitions(-DRV1106_1103)
 set(CMAKE_CXX_STANDARD 17)
 
@@ -22,8 +22,7 @@ set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 add_executable(${PROJECT_NAME}
         main.cpp
         src/luckfox_mpi.cpp
-        src/postprocess.cpp
-        src/yolov5.cpp
+        src/retinaface.cpp
 )
 
 # # 1. 添加编译选项，将函数和数据放入独立段
@@ -78,15 +77,15 @@ target_link_libraries(${PROJECT_NAME}
         rga
 )
 
-# 安装可执行文件到 rtsp_yolov5 目录
+# 安装可执行文件到 rtsp_retinaface_osd 目录
 install(TARGETS ${PROJECT_NAME}
-        DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/rtsp_yolov5
+        DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/rtsp_retinaface_osd
         PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 )
 
-# 安装 model 目录到 rtsp_yolov5 目录
+# 安装 model 目录到 rtsp_retinaface_osd 目录
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/model
-        DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/rtsp_yolov5
+        DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/rtsp_retinaface_osd
         DIRECTORY_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
         FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
 )
