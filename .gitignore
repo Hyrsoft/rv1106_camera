@@ -1,12 +1,4 @@
 .vscode/
-.idea/
-
-
-build/
-cmake-build-*/
-
-.cache/
-
 
 # 参考项目
 rockit-test/

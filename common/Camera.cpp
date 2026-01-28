@@ -1,8 +1,8 @@
 /**
- * @file LuckfoxCamera.cpp
+ * @file Camera.cpp
  * @brief Luckfox Pico RV1106 相机采集类 - 实现文件
  *
- * @author Nexus Embedded Team
+ * @author 好软，好温暖
  * @date 2026-01-29
  */
 
@@ -159,7 +159,7 @@ bool Camera::InitSystem() {
 }
 
 bool Camera::InitIsp() {
-  SPDLOG_DEBUG("Initializing ISP (cam_id: {}, iq_path: {})...", config_.cam_id,
+  SPDLOG_INFO("Initializing ISP (cam_id: {}, iq_path: {})...", config_.cam_id,
             config_.iq_path);
 
   RK_S32 ret = SAMPLE_COMM_ISP_Init(config_.cam_id, config_.hdr_mode,
@@ -177,12 +177,12 @@ bool Camera::InitIsp() {
     return false;
   }
 
-  SPDLOG_DEBUG("ISP initialized and running");
+  SPDLOG_INFO("ISP initialized and running");
   return true;
 }
 
 bool Camera::InitVi() {
-  SPDLOG_DEBUG("Initializing VI...");
+  SPDLOG_INFO("Initializing VI...");
 
   RK_S32 ret;
 
@@ -259,32 +259,31 @@ bool Camera::InitVi() {
     return false;
   }
 
-  SPDLOG_DEBUG("VI initialized (pipe: {}, chn: {})", vi_pipe_id_, vi_chn_id_);
+  SPDLOG_INFO("VI initialized (pipe: {}, chn: {})", vi_pipe_id_, vi_chn_id_);
   return true;
 }
 
 void Camera::DeinitVi() {
-  SPDLOG_DEBUG("Deinitializing VI...");
+  SPDLOG_INFO("Deinitializing VI...");
 
   RK_MPI_VI_DisableChn(vi_pipe_id_, vi_chn_id_);
   RK_MPI_VI_DisableDev(config_.cam_id);
 
   vi_initialized_ = false;
-  SPDLOG_DEBUG("VI deinitialized");
+  SPDLOG_INFO("VI deinitialized");
 }
 
 void Camera::DeinitIsp() {
-  SPDLOG_DEBUG("Deinitializing ISP...");
+  SPDLOG_INFO("Deinitializing ISP...");
 
   SAMPLE_COMM_ISP_Stop(config_.cam_id);
 
   isp_initialized_ = false;
-  SPDLOG_DEBUG("ISP deinitialized");
+  SPDLOG_INFO("ISP deinitialized");
 }
 
 void Camera::DeinitSystem() {
-  SPDLOG_DEBUG("Deinitializing MPI system...");
-
+  SPDLOG_INFO("Deinitializing MPI system...");
   RK_MPI_SYS_Exit();
 
   sys_initialized_ = false;

@@ -2,10 +2,10 @@
  * @file main.cpp
  * @brief Luckfox Pico 相机采集示例程序
  *
- * 演示如何使用 luckfox::Camera 类进行相机初始化和 YUV 帧采集。
+ * 演示如何使用 Camera 类进行相机初始化和 YUV 帧采集。
  * 默认会将采集到的 YUV 帧保存到可执行文件所在目录。
  *
- * @author Nexus Embedded Team
+ * @author 好软，好温暖
  * @date 2026-01-29
  */
 
@@ -102,14 +102,19 @@ static void PrintUsage(const char* prog_name) {
   printf("Options:\n");
   printf("  -w <width>    Set capture width (default: 1920)\n");
   printf("  -h <height>   Set capture height (default: 1080)\n");
-  printf("  -n <count>    Number of frames to capture (default: 10)\n");
-  printf("  -s            Save first frame to YUV file\n");
+  printf("  -n <count>    Number of frames to capture (default: 50)\n");
+  printf("  -k <skip>     Number of warmup frames to skip for AE convergence (default: 30)\n");
+  printf("  -d <delay>    Delay in seconds after init for AE to stabilize (default: 1)\n");
+  printf("  -s            Save frame to YUV file (after warmup)\n");
   printf("  -o <path>     Output directory for YUV file (default: executable dir)\n");
   printf("  -v            Verbose mode (debug level logging)\n");
   printf("  --help        Show this help message\n");
   printf("\n");
   printf("Example:\n");
-  printf("  %s -w 1920 -h 1080 -n 5 -s\n", prog_name);
+  printf("  %s -w 1920 -h 1080 -n 50 -k 30 -d 1 -s\n", prog_name);
+  printf("\n");
+  printf("Note: The first few frames after camera init are usually dark due to\n");
+  printf("      Auto Exposure (AE) convergence. Use -k to skip warmup frames.\n");
   printf("\n");
   printf("View saved YUV file with ffplay:\n");
   printf("  ffplay -video_size 1920x1080 -pixel_format nv12 frame_1920x1080.yuv\n");
@@ -128,7 +133,9 @@ int main(int argc, char* argv[]) {
   // 解析命令行参数
   uint32_t width = 1920;
   uint32_t height = 1080;
-  uint32_t capture_count = 10;
+  uint32_t capture_count = 50;   // 默认采集50帧
+  uint32_t skip_frames = 30;     // 默认跳过前30帧（AE收敛）
+  uint32_t init_delay_sec = 1;   // 初始化后延时秒数
   bool save_frame = false;
   std::string output_dir;
 
@@ -139,6 +146,10 @@ int main(int argc, char* argv[]) {
       height = static_cast<uint32_t>(atoi(argv[++i]));
     } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
       capture_count = static_cast<uint32_t>(atoi(argv[++i]));
+    } else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) {
+      skip_frames = static_cast<uint32_t>(atoi(argv[++i]));
+    } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
+      init_delay_sec = static_cast<uint32_t>(atoi(argv[++i]));
     } else if (strcmp(argv[i], "-s") == 0) {
       save_frame = true;
     } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
@@ -157,8 +168,9 @@ int main(int argc, char* argv[]) {
   }
 
   SPDLOG_INFO("Luckfox Camera Capture Demo");
-  SPDLOG_INFO("Configuration: {}x{}, capture {} frames", width, height, capture_count);
-  SPDLOG_INFO("Output directory: {}", output_dir);
+  SPDLOG_INFO("Configuration: {}x{}, capture {} frames, skip {} warmup frames", 
+              width, height, capture_count, skip_frames);
+  SPDLOG_INFO("Init delay: {} second(s), Output directory: {}", init_delay_sec, output_dir);
 
   // 配置相机
   Camera::Config config;
@@ -180,7 +192,29 @@ int main(int argc, char* argv[]) {
   }
 
   SPDLOG_INFO("Camera initialized successfully!");
-  SPDLOG_INFO("Starting capture...");
+
+  // 等待 AE（自动曝光）收敛
+  // ISP 启动后需要一定时间调整曝光参数，初始帧会比较暗
+  if (init_delay_sec > 0) {
+    SPDLOG_INFO("Waiting {} second(s) for AE (Auto Exposure) to stabilize...", init_delay_sec);
+    std::this_thread::sleep_for(std::chrono::seconds(init_delay_sec));
+  }
+
+  // 跳过热身帧（AE 收敛阶段的暗帧）
+  if (skip_frames > 0) {
+    SPDLOG_INFO("Skipping {} warmup frames for AE convergence...", skip_frames);
+    for (uint32_t i = 0; i < skip_frames && g_running; ++i) {
+      auto frame = camera.GetRawFrame(1000);
+      if (frame && frame->IsValid()) {
+        SPDLOG_DEBUG("Warmup frame #{} skipped (AE converging)", i + 1);
+      } else {
+        SPDLOG_WARN("Failed to get warmup frame #{}", i + 1);
+      }
+    }
+    SPDLOG_INFO("Warmup complete, AE should be converged now.");
+  }
+
+  SPDLOG_INFO("Starting real capture...");
 
   // 采集循环
   uint32_t frame_count = 0;
@@ -229,6 +263,7 @@ int main(int argc, char* argv[]) {
   }
 
   SPDLOG_INFO("=== Capture Summary ===");
+  SPDLOG_INFO("Warmup frames skipped: {}", skip_frames);
   SPDLOG_INFO("Total frames captured: {}", frame_count);
   SPDLOG_INFO("Frames saved to file: {}", saved_count);
   SPDLOG_INFO("Current FPS: {}", camera.GetCurrentFps());

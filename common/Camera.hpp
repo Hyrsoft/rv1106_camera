@@ -1,9 +1,8 @@
 /**
- * @file LuckfoxCamera.hpp
+ * @file Camera.hpp
  * @brief Luckfox Pico RV1106 相机采集类 - RAII 封装
  *
- * 本文件为 Rockchip RKMPI 和 AIQ ISP 接口提供现代 C++ 封装，
- * 遵循 RAII 原则，确保资源的正确初始化和释放。
+ * 本文件为 Rockchip RKMPI 和 AIQ ISP 接口提供 C++ 封装，
  *
  * @author 好软，好温暖
  * @date 2026-01-29

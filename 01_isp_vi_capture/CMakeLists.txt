@@ -23,8 +23,9 @@ set(SPDLOG_ACTIVE_LEVEL "2" CACHE STRING "Compile-time log level (0=TRACE, 6=OFF
 
 # 不能禁用异常，因为 spdlog 依赖异常处理
 
-set(LUCKFOX_MPI_PATH ../third_party/luckfox_pico_rkmpi_example)
-set(SPDLOG_PATH ../third_party/spdlog)
+set(LUCKFOX_MPI_PATH ../third_party/luckfox_pico_rkmpi_example) # luckfox提供的RKMPI库路径
+set(SPDLOG_PATH ../third_party/spdlog) # spdlog库路径
+set(COMMON_PATH ../common) # 公共代码路径
 
 # 使用完整的绝对路径指定静态库
 set(MPI_LIBS 
@@ -41,13 +42,14 @@ set(MPI_LIBS
 # 源文件
 set(SOURCES
     main.cpp
-    Camera.cpp
+    ${COMMON_PATH}/Camera.cpp
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES})
 
 # 包含路径
 target_include_directories(${PROJECT_NAME} PUBLIC
+    ${COMMON_PATH}
     ${LUCKFOX_MPI_PATH}/include
     ${LUCKFOX_MPI_PATH}/include/rkaiq
     ${LUCKFOX_MPI_PATH}/include/rkaiq/uAPI2
