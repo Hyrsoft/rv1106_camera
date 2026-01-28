@@ -1,192 +1,240 @@
-#include <iostream>
-#include <vector>
-#include <fstream>
-#include <memory>
+/**
+ * @file main.cpp
+ * @brief Luckfox Pico 相机采集示例程序
+ *
+ * 演示如何使用 luckfox::Camera 类进行相机初始化和 YUV 帧采集。
+ * 默认会将采集到的 YUV 帧保存到可执行文件所在目录。
+ *
+ * @author Nexus Embedded Team
+ * @date 2026-01-29
+ */
+
+#include <unistd.h>
+
+#include <cinttypes>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <thread>
-#include <chrono>
 
-// spdlog 日志库
-#include "spdlog/spdlog.h"
-#include "spdlog/sinks/stdout_color_sinks.h"
-#include "spdlog/sinks/basic_file_sink.h"
+#include "Camera.hpp"
 
-// Rockchip MPI & AIQ headers
-#include "rk_common.h"
-#include "rk_mpi_vi.h"
-#include "rk_mpi_sys.h"
-#include "sample_comm.h"
-#include "rk_aiq_user_api2_sysctl.h" // 必须包含这个来操作 Scene
+#include <spdlog/spdlog.h>
 
 namespace fs = std::filesystem;
-using namespace std::chrono_literals;
 
-class CSICamera {
-public:
-    CSICamera(int width, int height, const std::string& iq_path, std::shared_ptr<spdlog::logger> logger) 
-        : width_(width), height_(height), iq_path_(iq_path), logger_(logger), init_success_(false) {
-        
-        // 步骤顺序：SYS Init -> ISP Init -> VI Init
-        logger_->info("Initializing MPI system");
-        if (RK_MPI_SYS_Init() != RK_SUCCESS) {
-            logger_->error("SYS Init Failed");
-            return;
-        }
-        
-        logger_->info("Initializing ISP");
-        if (init_isp() != RK_SUCCESS) {
-            logger_->error("ISP Init Failed");
-            return;
-        }
-        
-        logger_->info("Initializing VI channel");
-        if (init_vi() != RK_SUCCESS) {
-            logger_->error("VI Init Failed");
-            return;
-        }
-        
-        init_success_ = true;
-        logger_->info("Camera initialization complete");
+// 全局运行标志
+static volatile bool g_running = true;
+
+/**
+ * @brief 信号处理函数
+ */
+static void SignalHandler(int sig) {
+  (void)sig;
+  SPDLOG_INFO("Received signal {}, stopping...", sig);
+  g_running = false;
+}
+
+/**
+ * @brief 获取可执行文件所在目录
+ */
+static std::string GetExecutableDir() {
+  char path[PATH_MAX];
+  ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
+  if (len != -1) {
+    path[len] = '\0';
+    return fs::path(path).parent_path().string();
+  }
+  // 如果获取失败，返回当前目录
+  return ".";
+}
+
+/**
+ * @brief 将 YUV 帧保存到文件
+ */
+static bool SaveFrameToFile(const YuvFrame& frame,
+                            const std::string& filepath) {
+  void* data = frame.GetVirAddr();
+  if (data == nullptr) {
+    SPDLOG_ERROR("Failed to get virtual address for frame");
+    return false;
+  }
+
+  size_t size = frame.GetDataSize();
+  if (size == 0) {
+    // 如果 GetDataSize 返回 0，手动计算 NV12 大小
+    // NV12: Y 平面 = width * height, UV 平面 = width * height / 2
+    size = frame.GetVirWidth() * frame.GetVirHeight() * 3 / 2;
+    SPDLOG_WARN("GetDataSize returned 0, using calculated size: {} bytes", size);
+  }
+
+  std::ofstream file(filepath, std::ios::binary);
+  if (!file.is_open()) {
+    SPDLOG_ERROR("Failed to open file for writing: {}", filepath);
+    return false;
+  }
+
+  file.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
+  file.close();
+
+  SPDLOG_INFO("Saved frame to {} ({} bytes)", filepath, size);
+  return true;
+}
+
+/**
+ * @brief 打印帧信息
+ */
+static void PrintFrameInfo(const YuvFrame& frame, uint32_t index) {
+  SPDLOG_INFO("Frame #{}: {}x{} (vir: {}x{}), format: {}, pts: {}, size: {}",
+              index, frame.GetWidth(), frame.GetHeight(), frame.GetVirWidth(),
+              frame.GetVirHeight(), static_cast<int>(frame.GetPixelFormat()),
+              frame.GetPts(), frame.GetDataSize());
+}
+
+/**
+ * @brief 打印使用帮助
+ */
+static void PrintUsage(const char* prog_name) {
+  printf("Usage: %s [options]\n", prog_name);
+  printf("Options:\n");
+  printf("  -w <width>    Set capture width (default: 1920)\n");
+  printf("  -h <height>   Set capture height (default: 1080)\n");
+  printf("  -n <count>    Number of frames to capture (default: 10)\n");
+  printf("  -s            Save first frame to YUV file\n");
+  printf("  -o <path>     Output directory for YUV file (default: executable dir)\n");
+  printf("  -v            Verbose mode (debug level logging)\n");
+  printf("  --help        Show this help message\n");
+  printf("\n");
+  printf("Example:\n");
+  printf("  %s -w 1920 -h 1080 -n 5 -s\n", prog_name);
+  printf("\n");
+  printf("View saved YUV file with ffplay:\n");
+  printf("  ffplay -video_size 1920x1080 -pixel_format nv12 frame_1920x1080.yuv\n");
+}
+
+int main(int argc, char* argv[]) {
+  // 设置信号处理
+  signal(SIGINT, SignalHandler);
+  signal(SIGTERM, SignalHandler);
+
+  // 默认日志级别
+  spdlog::set_level(spdlog::level::info);
+  // 设置日志格式：[时间] [级别] 消息
+  spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
+
+  // 解析命令行参数
+  uint32_t width = 1920;
+  uint32_t height = 1080;
+  uint32_t capture_count = 10;
+  bool save_frame = false;
+  std::string output_dir;
+
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "-w") == 0 && i + 1 < argc) {
+      width = static_cast<uint32_t>(atoi(argv[++i]));
+    } else if (strcmp(argv[i], "-h") == 0 && i + 1 < argc) {
+      height = static_cast<uint32_t>(atoi(argv[++i]));
+    } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
+      capture_count = static_cast<uint32_t>(atoi(argv[++i]));
+    } else if (strcmp(argv[i], "-s") == 0) {
+      save_frame = true;
+    } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+      output_dir = argv[++i];
+    } else if (strcmp(argv[i], "-v") == 0) {
+      spdlog::set_level(spdlog::level::debug);
+    } else if (strcmp(argv[i], "--help") == 0) {
+      PrintUsage(argv[0]);
+      return 0;
     }
-    
-    bool is_initialized() const {
-        return init_success_;
-    }
+  }
 
-    ~CSICamera() {
-        logger_->info("Cleaning up camera resources");
-        RK_MPI_VI_DisableChn(vi_pipe_, vi_chn_);
-        SAMPLE_COMM_ISP_Stop(0);
-        RK_MPI_SYS_Exit();
-        logger_->info("Cleanup complete");
-    }
+  // 如果未指定输出目录，使用可执行文件所在目录
+  if (output_dir.empty()) {
+    output_dir = GetExecutableDir();
+  }
 
-    bool capture_to_file(const std::string& filename) {
-        VIDEO_FRAME_INFO_S frame;
-        // 4K 采集耗时较长，超时时间给足 2000ms
-        logger_->debug("Requesting frame from VI channel");
-        RK_S32 s32Ret = RK_MPI_VI_GetChnFrame(vi_pipe_, vi_chn_, &frame, 2000);
-        if (s32Ret != RK_SUCCESS) {
-            logger_->error("Get Frame Failed: 0x{:x}", s32Ret);
-            return false;
+  SPDLOG_INFO("Luckfox Camera Capture Demo");
+  SPDLOG_INFO("Configuration: {}x{}, capture {} frames", width, height, capture_count);
+  SPDLOG_INFO("Output directory: {}", output_dir);
+
+  // 配置相机
+  Camera::Config config;
+  config.width = width;
+  config.height = height;
+  config.iq_path = "/etc/iqfiles";
+  config.dev_name = "/dev/video11";
+  config.pixel_format = RK_FMT_YUV420SP;  // NV12
+  config.buf_count = 3;
+  config.depth = 2;
+
+  // 创建相机实例
+  Camera camera(config);
+
+  // 初始化相机
+  if (!camera.Initialize()) {
+    SPDLOG_ERROR("Failed to initialize camera!");
+    return -1;
+  }
+
+  SPDLOG_INFO("Camera initialized successfully!");
+  SPDLOG_INFO("Starting capture...");
+
+  // 采集循环
+  uint32_t frame_count = 0;
+  uint32_t error_count = 0;
+  uint32_t saved_count = 0;
+  const uint32_t max_errors = 10;
+
+  while (g_running && frame_count < capture_count) {
+    // 获取帧
+    auto frame = camera.GetRawFrame(1000);  // 1 秒超时
+
+    if (frame && frame->IsValid()) {
+      frame_count++;
+      PrintFrameInfo(*frame, frame_count);
+
+      // 保存第一帧到可执行文件所在目录
+      if (save_frame && saved_count == 0) {
+        // 构建文件名：frame_宽x高.yuv
+        char filename[128];
+        snprintf(filename, sizeof(filename), "frame_%ux%u.yuv",
+                 frame->GetWidth(), frame->GetHeight());
+
+        // 构建完整路径
+        fs::path filepath = fs::path(output_dir) / filename;
+
+        if (SaveFrameToFile(*frame, filepath.string())) {
+          saved_count++;
+          SPDLOG_INFO("YUV file saved! View with:");
+          SPDLOG_INFO("  ffplay -video_size {}x{} -pixel_format nv12 {}",
+                      frame->GetWidth(), frame->GetHeight(), filepath.string());
         }
+      }
 
-        void* data = RK_MPI_MB_Handle2VirAddr(frame.stVFrame.pMbBlk);
-        size_t buffer_size = frame.stVFrame.u32Width * frame.stVFrame.u32Height * 3 / 2;
-        logger_->info("Frame captured: {}x{}, size: {} bytes", frame.stVFrame.u32Width, frame.stVFrame.u32Height, buffer_size);
-
-        std::ofstream ofs(filename, std::ios::binary);
-        if (ofs.is_open()) {
-            ofs.write(reinterpret_cast<const char*>(data), buffer_size);
-            ofs.close();
-            logger_->info("Successfully saved 4K YUV frame to {}", filename);
-        } else {
-            logger_->error("Failed to open file: {}", filename);
-        }
-
-        RK_MPI_VI_ReleaseChnFrame(vi_pipe_, vi_chn_, &frame);
-        return true;
+      error_count = 0;  // 重置错误计数
+    } else {
+      error_count++;
+      SPDLOG_DEBUG("Failed to get frame, error count: {}", error_count);
+      if (error_count >= max_errors) {
+        SPDLOG_ERROR("Too many consecutive errors ({}), stopping...", error_count);
+        break;
+      }
     }
 
-private:
-    int width_, height_;
-    std::string iq_path_;
-    const int vi_pipe_ = 0;
-    const int vi_chn_ = 0;
-    std::shared_ptr<spdlog::logger> logger_;
-    bool init_success_;
+    // 短暂延时，避免 CPU 占用过高
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
 
-    RK_S32 init_isp() {
-        logger_->info("Starting ISP with IQ Path: {}", iq_path_);
-        
-        // 初始化 ISP 系统
-        RK_S32 s32Ret = SAMPLE_COMM_ISP_Init(0, RK_AIQ_WORKING_MODE_NORMAL, RK_FALSE, iq_path_.c_str());
-        if (s32Ret != RK_SUCCESS) {
-            logger_->error("SAMPLE_COMM_ISP_Init failed: 0x{:x}", s32Ret);
-            return s32Ret;
-        }
-        
-        logger_->debug("ISP initialized successfully");
+  SPDLOG_INFO("=== Capture Summary ===");
+  SPDLOG_INFO("Total frames captured: {}", frame_count);
+  SPDLOG_INFO("Frames saved to file: {}", saved_count);
+  SPDLOG_INFO("Current FPS: {}", camera.GetCurrentFps());
 
-        // 启动 ISP 线程
-        s32Ret = SAMPLE_COMM_ISP_Run(0);
-        if (s32Ret != RK_SUCCESS) {
-            logger_->error("SAMPLE_COMM_ISP_Run failed: 0x{:x}", s32Ret);
-        } else {
-            logger_->debug("ISP running successfully");
-        }
-        return s32Ret;
-    }
+  // Camera 析构时会自动释放资源
+  SPDLOG_INFO("Exiting...");
 
-    RK_S32 init_vi() {
-        logger_->debug("Configuring VI channel: {}x{}", width_, height_);
-        VI_CHN_ATTR_S stChnAttr;
-        memset(&stChnAttr, 0, sizeof(VI_CHN_ATTR_S));
-        
-        // 4K 内存优化配置
-        stChnAttr.stIspOpt.u32BufCount = 2; // 将缓冲区从 3 降到 2，节省约 12MB 内存
-        stChnAttr.stIspOpt.enMemoryType = VI_V4L2_MEMORY_TYPE_MMAP;
-        stChnAttr.stSize.u32Width = width_;
-        stChnAttr.stSize.u32Height = height_;
-        stChnAttr.enPixelFormat = RK_FMT_YUV420SP; // NV12
-        stChnAttr.enCompressMode = COMPRESS_MODE_NONE;
-
-        RK_MPI_VI_SetChnAttr(vi_pipe_, vi_chn_, &stChnAttr);
-        RK_S32 s32Ret = RK_MPI_VI_EnableChn(vi_pipe_, vi_chn_);
-        if (s32Ret != RK_SUCCESS) {
-            logger_->error("VI channel enable failed: 0x{:x}", s32Ret);
-        } else {
-            logger_->debug("VI channel enabled successfully");
-        }
-        return s32Ret;
-    }
-};
-
-int main() {
-    // 初始化 spdlog 日志
-    // 创建控制台日志（彩色输出）
-    auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-    console_sink->set_level(spdlog::level::info);
-    
-    // 创建文件日志
-    auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("CameraCapture.log", true);
-    file_sink->set_level(spdlog::level::debug);
-    
-    // 合并两个 sink
-    std::vector<spdlog::sink_ptr> sinks{console_sink, file_sink};
-    auto logger = std::make_shared<spdlog::logger>("CameraCapture", sinks.begin(), sinks.end());
-    logger->set_level(spdlog::level::debug);
-    logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
-    spdlog::register_logger(logger);
-    
-    logger->info("========================================");
-    logger->info("Camera Capture Application Started");
-    logger->info("========================================");
-    
-    // 先清理可能残留在后台的服务
-    logger->info("Killing residual processes...");
-    system("killall luckfox_rtsp_opencv 2>/dev/null");
-    system("killall rkaiq_3A_server 2>/dev/null");
-    
-    logger->info("Creating camera instance: 3840x2160 @ /etc/iqfiles");
-    CSICamera cam(3840, 2160, "/etc/iqfiles", logger);
-    
-    if (!cam.is_initialized()) {
-        logger->error("Camera initialization failed!");
-        return -1;
-    }
-
-    logger->info("Waiting for 3A (AE/AWB) to stabilize...");
-    std::this_thread::sleep_for(3s); 
-
-    if (cam.capture_to_file("capture_4k.yuv")) {
-        logger->info("View the file using:");
-        logger->info("ffplay -f rawvideo -pixel_format nv12 -video_size 3840x2160 capture_4k.yuv");
-    }
-    
-    logger->info("========================================");
-    logger->info("Capture completed successfully");
-    logger->info("========================================");
-    
-    return 0;
+  return 0;
 }
