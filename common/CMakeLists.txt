@@ -10,6 +10,7 @@ set(RMG_SOURCES
     # 功能模块
     VideoCapture.cpp
     VideoEncoder.cpp
+    RtspServer.cpp
 )
 
 set(RMG_HEADERS
@@ -23,6 +24,7 @@ set(RMG_HEADERS
     # 功能模块
     VideoCapture.hpp
     VideoEncoder.hpp
+    RtspServer.hpp
 )
 
 # 创建静态库
@@ -39,11 +41,14 @@ target_include_directories(rmg PUBLIC
     ${LUCKFOX_MPI_PATH}/include/rkaiq/iq_parser
     ${LUCKFOX_MPI_PATH}/include/rkaiq/iq_parser_v2
     ${LUCKFOX_MPI_PATH}/include/rkaiq/algos
+    # RTSP 库头文件
+    ${CMAKE_SOURCE_DIR}/third_party/luckfox_pico_rkmpi_example/include
 )
 
 # 链接目录
 target_link_directories(rmg PUBLIC
     ${LUCKFOX_MPI_PATH}/lib/uclibc
+    ${CMAKE_SOURCE_DIR}/third_party/luckfox_pico_rkmpi_example/lib
 )
 
 # 链接 spdlog

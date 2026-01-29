@@ -58,6 +58,6 @@ add_subdirectory(common)
 # 示例程序
 add_subdirectory(01_isp_vi_capture)
 add_subdirectory(02_jpeg_capture)
-# add_subdirectory(03_xxx)  # 未来的示例
+add_subdirectory(03_vi_venc_rtsp)
 
 message(STATUS "spdlog compile-time log level: ${SPDLOG_ACTIVE_LEVEL} (0=TRACE, 2=INFO, 6=OFF)")

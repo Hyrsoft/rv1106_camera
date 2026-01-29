@@ -20,3 +20,4 @@
 // 功能模块
 #include "VideoCapture.hpp"
 #include "VideoEncoder.hpp"
+#include "RtspServer.hpp"

@@ -37,6 +37,8 @@ cmake --build build/Debug --target JpegCapture
 # 自定义分辨率和质量
 ./JpegCapture -w 1280 -h 720 -q 90
 
+./JpegCapture -w 3840 -h 2160 -q 90
+
 # 指定输出目录
 ./JpegCapture -o /tmp/photos
 ```
