@@ -1,19 +1,35 @@
 # ========================================
-# libcamera 静态库
+# RV1106 MediaGraph (rmg) 静态库
 # ========================================
 
-set(CAMERA_SOURCES
-    Camera.cpp
+set(RMG_SOURCES
+    # 核心框架
+    MediaFrame.cpp
+    SystemManager.cpp
+    Pipeline.cpp
+    # 功能模块
+    VideoCapture.cpp
+    VideoEncoder.cpp
 )
 
-set(CAMERA_HEADERS
-    Camera.hpp
+set(RMG_HEADERS
+    # 统一头文件
+    rmg.hpp
+    # 核心框架
+    MediaFrame.hpp
+    MediaModule.hpp
+    SystemManager.hpp
+    Pipeline.hpp
+    # 功能模块
+    VideoCapture.hpp
+    VideoEncoder.hpp
 )
 
-add_library(camera STATIC ${CAMERA_SOURCES} ${CAMERA_HEADERS})
+# 创建静态库
+add_library(rmg STATIC ${RMG_SOURCES} ${RMG_HEADERS})
 
 # 包含路径
-target_include_directories(camera PUBLIC
+target_include_directories(rmg PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${LUCKFOX_MPI_PATH}/include
     ${LUCKFOX_MPI_PATH}/include/rkaiq
@@ -26,14 +42,17 @@ target_include_directories(camera PUBLIC
 )
 
 # 链接目录
-target_link_directories(camera PUBLIC
+target_link_directories(rmg PUBLIC
     ${LUCKFOX_MPI_PATH}/lib/uclibc
 )
 
-# 链接 spdlog（camera 库内部使用）
-target_link_libraries(camera PUBLIC spdlog::spdlog)
+# 链接 spdlog
+target_link_libraries(rmg PUBLIC spdlog::spdlog)
+
+# C++17 特性
+target_compile_features(rmg PUBLIC cxx_std_17)
 
 # 设置编译时日志级别
-target_compile_definitions(camera PRIVATE 
+target_compile_definitions(rmg PRIVATE 
     SPDLOG_ACTIVE_LEVEL=${SPDLOG_ACTIVE_LEVEL}
 )

@@ -16,9 +16,9 @@ target_compile_definitions(${TARGET_NAME} PRIVATE
     SPDLOG_ACTIVE_LEVEL=${SPDLOG_ACTIVE_LEVEL}
 )
 
-# 链接 libcamera 和 MPI 库
+# 链接 rmg 和 MPI 库
 target_link_libraries(${TARGET_NAME} 
-    camera
+    rmg
     ${MPI_LIBS}
     stdc++fs
 )
