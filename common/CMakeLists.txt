@@ -11,6 +11,7 @@ set(RMG_SOURCES
     VideoCapture.cpp
     VideoEncoder.cpp
     RtspServer.cpp
+    FileSaver.cpp
 )
 
 set(RMG_HEADERS
@@ -25,6 +26,7 @@ set(RMG_HEADERS
     VideoCapture.hpp
     VideoEncoder.hpp
     RtspServer.hpp
+    FileSaver.hpp
 )
 
 # 创建静态库

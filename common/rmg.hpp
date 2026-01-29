@@ -21,3 +21,4 @@
 #include "VideoCapture.hpp"
 #include "VideoEncoder.hpp"
 #include "RtspServer.hpp"
+#include "FileSaver.hpp"

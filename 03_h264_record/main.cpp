@@ -1,16 +1,16 @@
 /**
  * @file main.cpp
- * @brief RV1106 RTSP 视频流示例程序
+ * @brief RV1106 H.264 视频录制示例程序
  *
- * 演示如何使用 VideoCapture 采集 YUV 帧，通过 VideoEncoder 编码为 H.264，
- * 并使用 RtspServer 推送 RTSP 流。
- *
- * 关键特性：
- * - VI -> VENC 硬件绑定（零拷贝）
- * - VENC -> RTSP 软件回调（数据传递）
+ * 演示如何使用 VI + VENC 硬件绑定录制 H.264 原始码流。
+ * 
+ * 架构：
+ *   Camera (VI) ══════════> VideoEncoder (VENC) ────────────> FileSaver
+ *                硬件绑定                      软件回调
+ *                (零拷贝)                    (文件写入)
  *
  * @author 好软，好温暖
- * @date 2026-01-30
+ * @date 2026-01-29
  */
 
 #include <unistd.h>
@@ -54,39 +54,32 @@ static void PrintUsage(const char *prog_name) {
     printf("  -f <fps>        Frame rate (default: 30)\n");
     printf("  -b <bitrate>    Bitrate in kbps (default: 4000)\n");
     printf("  -g <gop>        GOP size (default: 60)\n");
-    printf("  -p <port>       RTSP port (default: 554)\n");
-    printf("  -s <path>       RTSP stream path (default: /live/0)\n");
+    printf("  -t <seconds>    Recording duration in seconds (default: 10)\n");
+    printf("  -o <path>       Output directory (default: current dir)\n");
+    printf("  -n <filename>   Output filename (default: auto-generated)\n");
     printf("  -c <codec>      Codec: h264, h265 (default: h264)\n");
     printf("  -v              Verbose mode\n");
     printf("  -?              Show this help\n");
     printf("\nExample:\n");
-    printf("  %s -w 1920 -h 1080 -f 30 -b 4000\n", prog_name);
-    printf("\nRTSP URL:\n");
-    printf("  rtsp://<device_ip>:554/live/0\n");
+    printf("  %s -w 1920 -h 1080 -f 30 -t 30\n", prog_name);
+    printf("  %s -c h265 -b 2000 -t 60\n", prog_name);
 }
 
 /**
- * @brief 获取设备 IP 地址（简单实现）
+ * @brief 获取可执行文件所在目录
  */
-static std::string GetDeviceIp() {
-    // 尝试从 eth0 或 wlan0 获取 IP
-    FILE *fp = popen("ip -4 addr show scope global | grep inet | head -1 | awk '{print $2}' | cut -d'/' -f1", "r");
-    if (fp) {
-        char buf[64] = {0};
-        if (fgets(buf, sizeof(buf), fp)) {
-            // 移除换行符
-            size_t len = strlen(buf);
-            if (len > 0 && buf[len - 1] == '\n') {
-                buf[len - 1] = '\0';
-            }
-            pclose(fp);
-            if (strlen(buf) > 0) {
-                return std::string(buf);
-            }
+static std::string GetExecutableDir() {
+    char path[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    if (len != -1) {
+        path[len] = '\0';
+        std::string exe_path(path);
+        size_t pos = exe_path.find_last_of('/');
+        if (pos != std::string::npos) {
+            return exe_path.substr(0, pos);
         }
-        pclose(fp);
     }
-    return "<device_ip>";
+    return ".";
 }
 
 int main(int argc, char *argv[]) {
@@ -96,14 +89,15 @@ int main(int argc, char *argv[]) {
     uint32_t fps = 30;
     uint32_t bitrate = 4000;
     uint32_t gop = 60;
-    uint16_t rtsp_port = 554;
-    std::string rtsp_path = "/live/0";
+    uint32_t duration_sec = 10;
+    std::string output_dir;
+    std::string output_filename;
     rmg::CodecType codec = rmg::CodecType::kH264;
     bool verbose = false;
 
     // 解析命令行参数
     int opt;
-    while ((opt = getopt(argc, argv, "w:h:f:b:g:p:s:c:v?")) != -1) {
+    while ((opt = getopt(argc, argv, "w:h:f:b:g:t:o:n:c:v?")) != -1) {
         switch (opt) {
             case 'w':
                 width = static_cast<uint32_t>(atoi(optarg));
@@ -120,11 +114,14 @@ int main(int argc, char *argv[]) {
             case 'g':
                 gop = static_cast<uint32_t>(atoi(optarg));
                 break;
-            case 'p':
-                rtsp_port = static_cast<uint16_t>(atoi(optarg));
+            case 't':
+                duration_sec = static_cast<uint32_t>(atoi(optarg));
                 break;
-            case 's':
-                rtsp_path = optarg;
+            case 'o':
+                output_dir = optarg;
+                break;
+            case 'n':
+                output_filename = optarg;
                 break;
             case 'c':
                 if (strcmp(optarg, "h265") == 0 || strcmp(optarg, "H265") == 0 ||
@@ -144,26 +141,32 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // 设置输出目录
+    if (output_dir.empty()) {
+        output_dir = GetExecutableDir();
+    }
+
     // 设置日志级别
     if (verbose) {
         spdlog::set_level(spdlog::level::debug);
     } else {
         spdlog::set_level(spdlog::level::info);
     }
+    spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
 
     // 注册信号处理
     signal(SIGINT, SignalHandler);
     signal(SIGTERM, SignalHandler);
 
-    SPDLOG_INFO("=== RV1106 RTSP Streaming Example ===");
+    SPDLOG_INFO("=== RV1106 H.264/HEVC Recording Example ===");
     SPDLOG_INFO("Configuration:");
     SPDLOG_INFO("  Resolution: {}x{}", width, height);
     SPDLOG_INFO("  FPS: {}", fps);
     SPDLOG_INFO("  Bitrate: {} kbps", bitrate);
     SPDLOG_INFO("  GOP: {}", gop);
-    SPDLOG_INFO("  Codec: {}", codec == rmg::CodecType::kH265 ? "H.265" : "H.264");
-    SPDLOG_INFO("  RTSP Port: {}", rtsp_port);
-    SPDLOG_INFO("  RTSP Path: {}", rtsp_path);
+    SPDLOG_INFO("  Codec: {}", codec == rmg::CodecType::kH265 ? "H.265/HEVC" : "H.264/AVC");
+    SPDLOG_INFO("  Duration: {} seconds", duration_sec);
+    SPDLOG_INFO("  Output dir: {}", output_dir);
 
     // 计算对齐尺寸 (16 字节对齐)
     uint32_t vir_width = (width + 15) & ~15;
@@ -223,26 +226,29 @@ int main(int argc, char *argv[]) {
     }
 
     // ========================================
-    // 创建 RTSP 服务器模块
+    // 创建文件保存模块 (FileSaver)
     // ========================================
-    rmg::RtspServer::Config rtsp_config{};
-    rtsp_config.port = rtsp_port;
-    rtsp_config.path = rtsp_path;
-    rtsp_config.codec = (codec == rmg::CodecType::kH265) ? rmg::RtspCodecId::kH265 : rmg::RtspCodecId::kH264;
+    rmg::FileSaver::Config saver_config{};
+    saver_config.output_dir = output_dir;
+    saver_config.filename_prefix = output_filename;
+    saver_config.format = (codec == rmg::CodecType::kH265) ? rmg::FileFormat::kHEVC : rmg::FileFormat::kH264;
+    saver_config.width = width;
+    saver_config.height = height;
+    saver_config.append_timestamp = output_filename.empty();  // 如果没指定文件名，则添加时间戳
+    saver_config.max_frames = duration_sec * fps;  // 根据时长和帧率计算最大帧数
 
-    auto rtsp = std::make_unique<rmg::RtspServer>(rtsp_config);
-    if (!rtsp->Initialize()) {
-        SPDLOG_ERROR("Failed to initialize RtspServer");
+    auto saver = std::make_unique<rmg::FileSaver>(saver_config);
+    if (!saver->Initialize()) {
+        SPDLOG_ERROR("Failed to initialize FileSaver");
         sys.Deinitialize();
         return -1;
     }
 
     // ========================================
-    // 设置编码数据回调 -> 推送到 RTSP
+    // 设置编码数据回调 -> 保存到文件
     // ========================================
-    encoder->SetEncodedDataCallback([&rtsp](rmg::EncodedFrame frame) {
-        // 推送到 RTSP 服务器
-        if (rtsp->PushFrame(frame)) {
+    encoder->SetEncodedDataCallback([&saver](rmg::EncodedFrame frame) {
+        if (saver->SaveFrame(frame)) {
             g_frame_count.fetch_add(1, std::memory_order_relaxed);
             g_byte_count.fetch_add(frame.GetDataSize(), std::memory_order_relaxed);
         }
@@ -265,8 +271,17 @@ int main(int argc, char *argv[]) {
     // ========================================
     // 启动所有模块
     // ========================================
-    if (!rtsp->Start()) {
-        SPDLOG_ERROR("Failed to start RtspServer");
+    if (!saver->Start()) {
+        SPDLOG_ERROR("Failed to start FileSaver");
+        pipeline.UnbindAll();
+        sys.Deinitialize();
+        return -1;
+    }
+
+    // 开始录制
+    if (!saver->StartRecording()) {
+        SPDLOG_ERROR("Failed to start recording");
+        saver->Stop();
         pipeline.UnbindAll();
         sys.Deinitialize();
         return -1;
@@ -274,42 +289,31 @@ int main(int argc, char *argv[]) {
 
     if (!encoder->Start()) {
         SPDLOG_ERROR("Failed to start VideoEncoder");
-        rtsp->Stop();
+        saver->Stop();
         pipeline.UnbindAll();
         sys.Deinitialize();
         return -1;
     }
 
-    if (!vi->Start()) {
-        SPDLOG_ERROR("Failed to start VideoCapture");
-        encoder->Stop();
-        rtsp->Stop();
-        pipeline.UnbindAll();
-        sys.Deinitialize();
-        return -1;
-    }
+    // 注意：在硬件绑定模式下，不需要调用 vi->Start()
+    // 因为 VI 的数据会自动流向 VENC，无需通过 CaptureThread 拉取帧
+    // 如果调用 vi->Start()，CaptureThread 会调用 GetFrame() 把帧"抢走"，
+    // 导致 VENC 收不到数据
 
-    // 打印 RTSP URL
-    std::string device_ip = GetDeviceIp();
     SPDLOG_INFO("===========================================");
-    SPDLOG_INFO("RTSP streaming started!");
-    SPDLOG_INFO("Stream URL: rtsp://{}:{}{}", device_ip, rtsp_port, rtsp_path);
-    SPDLOG_INFO("Use VLC or ffplay to view the stream:");
-    SPDLOG_INFO("  ffplay -rtsp_transport tcp rtsp://{}:{}{}", device_ip, rtsp_port, rtsp_path);
-    SPDLOG_INFO("Press Ctrl+C to stop...");
+    SPDLOG_INFO("Recording started!");
+    SPDLOG_INFO("Output file: {}", saver->GetCurrentFilePath());
+    SPDLOG_INFO("Press Ctrl+C to stop early...");
     SPDLOG_INFO("===========================================");
 
     // ========================================
-    // 主循环 - 定期打印统计信息
+    // 主循环 - 等待录制完成或用户中断
     // ========================================
     auto start_time = std::chrono::steady_clock::now();
     uint64_t last_frame_count = 0;
-    uint64_t last_byte_count = 0;
 
-    while (g_running.load()) {
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-
-        if (!g_running.load()) break;
+    while (g_running.load() && saver->IsRecording()) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
 
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count();
@@ -318,17 +322,20 @@ int main(int argc, char *argv[]) {
         uint64_t current_bytes = g_byte_count.load();
 
         uint64_t delta_frames = current_frames - last_frame_count;
-        uint64_t delta_bytes = current_bytes - last_byte_count;
+        double current_fps = static_cast<double>(delta_frames);
+        double bitrate_kbps = static_cast<double>(current_bytes * 8) / (elapsed * 1000.0);
 
-        double avg_fps = (elapsed > 0) ? static_cast<double>(current_frames) / elapsed : 0;
-        double current_fps = static_cast<double>(delta_frames) / 5.0;
-        double bitrate_kbps = static_cast<double>(delta_bytes * 8) / (5.0 * 1000.0);
-
-        SPDLOG_INFO("Stats: frames={}, avg_fps={:.1f}, current_fps={:.1f}, bitrate={:.0f}kbps",
-                    current_frames, avg_fps, current_fps, bitrate_kbps);
+        SPDLOG_INFO("Recording: {}s / {}s | frames={} | fps={:.1f} | size={:.1f}MB",
+                    elapsed, duration_sec, current_frames, current_fps,
+                    static_cast<double>(current_bytes) / (1024 * 1024));
 
         last_frame_count = current_frames;
-        last_byte_count = current_bytes;
+
+        // 检查是否达到时长限制
+        if (static_cast<uint32_t>(elapsed) >= duration_sec) {
+            SPDLOG_INFO("Recording duration reached");
+            break;
+        }
     }
 
     // ========================================
@@ -336,9 +343,12 @@ int main(int argc, char *argv[]) {
     // ========================================
     SPDLOG_INFO("Stopping...");
 
-    vi->Stop();
+    // 注意：在硬件绑定模式下，不需要调用 vi->Stop()
     encoder->Stop();
-    rtsp->Stop();
+    
+    // 停止录制并获取文件路径
+    std::string output_file = saver->StopRecording();
+    saver->Stop();
 
     // 解绑
     pipeline.UnbindAll();
@@ -346,9 +356,25 @@ int main(int argc, char *argv[]) {
     // 关闭系统
     sys.Deinitialize();
 
-    SPDLOG_INFO("Total frames streamed: {}", g_frame_count.load());
-    SPDLOG_INFO("Total bytes sent: {} MB", g_byte_count.load() / (1024 * 1024));
-    SPDLOG_INFO("Done.");
+    // 打印统计信息
+    SPDLOG_INFO("===========================================");
+    SPDLOG_INFO("Recording completed!");
+    SPDLOG_INFO("Output file: {}", output_file);
+    SPDLOG_INFO("Total frames: {}", g_frame_count.load());
+    SPDLOG_INFO("Total size: {:.2f} MB", static_cast<double>(g_byte_count.load()) / (1024 * 1024));
+    SPDLOG_INFO("===========================================");
+    SPDLOG_INFO("To play the video:");
+    if (codec == rmg::CodecType::kH265) {
+        SPDLOG_INFO("  ffplay -f hevc {}", output_file);
+    } else {
+        SPDLOG_INFO("  ffplay -f h264 {}", output_file);
+    }
+    SPDLOG_INFO("To convert to MP4:");
+    if (codec == rmg::CodecType::kH265) {
+        SPDLOG_INFO("  ffmpeg -f hevc -i {} -c copy output.mp4", output_file);
+    } else {
+        SPDLOG_INFO("  ffmpeg -f h264 -i {} -c copy output.mp4", output_file);
+    }
 
     return 0;
 }

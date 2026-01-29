@@ -3,7 +3,7 @@
  * @brief RV1106 JPEG 图像捕获示例程序
  *
  * 演示如何使用 VideoCapture 采集 YUV 帧，通过 VideoEncoder 编码为 JPEG，
- * 并保存到本地文件。支持单帧拍照和连续拍照模式。
+ * 并使用 FileSaver 保存到本地文件。支持单帧拍照和连续拍照模式。
  *
  * @author 好软，好温暖
  * @date 2026-01-29
@@ -20,7 +20,6 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
-#include <fstream>
 #include <thread>
 
 #include "rmg.hpp"
@@ -53,50 +52,6 @@ static std::string GetExecutableDir() {
         return fs::path(path).parent_path().string();
     }
     return ".";
-}
-
-/**
- * @brief 生成带时间戳的文件名
- */
-static std::string GenerateFilename(const std::string &output_dir, uint32_t width, uint32_t height) {
-    time_t t = time(nullptr);
-    struct tm tm = *localtime(&t);
-    char filename[256];
-    snprintf(filename, sizeof(filename), "%s/%d%02d%02d_%02d%02d%02d_%ux%u.jpg",
-             output_dir.c_str(),
-             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-             tm.tm_hour, tm.tm_min, tm.tm_sec,
-             width, height);
-    return std::string(filename);
-}
-
-/**
- * @brief 保存 JPEG 数据到文件
- */
-static bool SaveJpegToFile(const rmg::EncodedFrame &frame, const std::string &filepath) {
-    void *data = frame.GetVirAddr();
-    if (data == nullptr) {
-        SPDLOG_ERROR("Failed to get virtual address for encoded frame");
-        return false;
-    }
-
-    size_t size = frame.GetDataSize();
-    if (size == 0) {
-        SPDLOG_ERROR("Encoded frame data size is 0");
-        return false;
-    }
-
-    std::ofstream file(filepath, std::ios::binary);
-    if (!file.is_open()) {
-        SPDLOG_ERROR("Failed to open file for writing: {}", filepath);
-        return false;
-    }
-
-    file.write(reinterpret_cast<const char *>(data), static_cast<std::streamsize>(size));
-    file.close();
-
-    SPDLOG_INFO("Saved JPEG to {} ({} bytes)", filepath, size);
-    return true;
 }
 
 /**
@@ -175,11 +130,6 @@ int main(int argc, char *argv[]) {
         output_dir = GetExecutableDir();
     }
 
-    // 确保输出目录存在
-    if (!fs::exists(output_dir)) {
-        fs::create_directories(output_dir);
-    }
-
     SPDLOG_INFO("=== RV1106 JPEG Capture Demo ===");
     SPDLOG_INFO("Configuration: {}x{}, quality: {}", width, height, jpeg_quality);
     SPDLOG_INFO("Output directory: {}", output_dir);
@@ -232,18 +182,41 @@ int main(int argc, char *argv[]) {
     SPDLOG_INFO("JPEG Encoder initialized");
 
     // ========================================
-    // 设置编码回调 - 保存 JPEG 文件
+    // 配置文件保存模块 (FileSaver)
+    // ========================================
+    rmg::FileSaver::Config saver_config;
+    saver_config.output_dir = output_dir;
+    saver_config.format = rmg::FileFormat::kJPEG;
+    saver_config.width = width;
+    saver_config.height = height;
+    saver_config.append_timestamp = true;
+
+    rmg::FileSaver saver(saver_config);
+
+    if (!saver.Initialize()) {
+        SPDLOG_ERROR("Failed to initialize FileSaver!");
+        return -1;
+    }
+    SPDLOG_INFO("FileSaver initialized");
+
+    if (!saver.Start()) {
+        SPDLOG_ERROR("Failed to start FileSaver!");
+        return -1;
+    }
+
+    // ========================================
+    // 设置编码回调 - 使用 FileSaver 保存 JPEG 文件
     // ========================================
     std::atomic<uint32_t> saved_count{0};
 
-    encoder.SetEncodedDataCallback([&](rmg::EncodedFrame frame) {
+    encoder.SetEncodedDataCallback([&saver, &saved_count](rmg::EncodedFrame frame) {
         if (!frame.IsValid()) {
             SPDLOG_WARN("Received invalid encoded frame");
             return;
         }
 
-        std::string filepath = GenerateFilename(output_dir, width, height);
-        if (SaveJpegToFile(frame, filepath)) {
+        std::string filepath = saver.SaveJpeg(frame);
+        if (!filepath.empty()) {
             saved_count++;
         }
     });
@@ -340,10 +313,12 @@ int main(int argc, char *argv[]) {
     // ========================================
     SPDLOG_INFO("Stopping...");
     encoder.Stop();
+    saver.Stop();
 
     SPDLOG_INFO("=== Capture Summary ===");
     SPDLOG_INFO("Capture attempts: {}", capture_attempt);
     SPDLOG_INFO("JPEG files saved: {}", saved_count.load());
+    SPDLOG_INFO("Total bytes saved: {} KB", saver.GetSavedBytes() / 1024);
     SPDLOG_INFO("Output directory: {}", output_dir);
 
     return 0;
