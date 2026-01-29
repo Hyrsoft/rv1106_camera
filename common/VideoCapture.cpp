@@ -258,6 +258,12 @@ namespace rmg {
         VI_CHN_ATTR_S chn_attr;
         std::memset(&chn_attr, 0, sizeof(chn_attr));
 
+        // [FIX] 设置帧率为 -1 (自动/全速)，防止帧率为 0 导致无输出
+        // memset 会将帧率置为 0，RK MPI 中帧率为 0 意味着"停止输出"
+        // 必须显式设置为 -1 表示不限制，跟随源帧率
+        chn_attr.stFrameRate.s32SrcFrameRate = -1;
+        chn_attr.stFrameRate.s32DstFrameRate = -1;
+
         chn_attr.stSize.u32Width = config_.width;
         chn_attr.stSize.u32Height = config_.height;
         chn_attr.enPixelFormat = config_.pixel_format;

@@ -262,14 +262,20 @@ namespace rmg {
         constexpr RK_S32 RK_ERR_VENC_HW_NOT_CREATE = 0xA0048010;
 
         while (running_.load()) {
-            // 为包元数据分配堆内存（关键修复）
-            // RV1106 JPEG 编码通常只有 1 个包，H.264/H.265 可能有多个
-            VENC_PACK_S* pack_buffer = new VENC_PACK_S[1];
+            // [FIX] 为包元数据分配堆内存
+            // H.264 的第一帧 (IDR) 通常包含 SPS、PPS、SEI 和 IDR Slice 共 4 个 NALU 包
+            // 如果只分配 1 个，可能导致丢包或错误
+            // 分配 8 个以确保安全
+            constexpr int kMaxPackCount = 8;
+            VENC_PACK_S* pack_buffer = new VENC_PACK_S[kMaxPackCount];
 
             VENC_STREAM_S stream;
             std::memset(&stream, 0, sizeof(stream));
             stream.pstPack = pack_buffer;
-            stream.u32PackCount = 1;
+            // [FIX] 设置为 0 以匹配 main_basic.c 的行为
+            // 或者设置为实际分配的大小 kMaxPackCount
+            // RK MPI 中传入 0 可能表示"不限制"或由 SDK 自行处理
+            stream.u32PackCount = 0;
 
             int32_t timeout_ms = (config_.codec == CodecType::kJPEG) ? 200 : 100;
             RK_S32 ret = RK_MPI_VENC_GetStream(config_.chn_id, &stream, timeout_ms);

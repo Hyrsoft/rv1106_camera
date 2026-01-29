@@ -192,6 +192,10 @@ int main(int argc, char *argv[]) {
     vi_config.height = height;
     vi_config.pixel_format = RK_FMT_YUV420SP;  // NV12
     vi_config.buf_count = 4;
+    // [FIX] 硬件绑定模式下，必须将 depth 设为 0！
+    // 否则 VI 会等待用户 GetFrame，导致管道阻塞。
+    // depth > 0 时，VI 保留帧等待用户取走，如果不取，队列满后不再向 VENC 发送数据
+    vi_config.depth = 0;
 
     auto vi = std::make_unique<rmg::VideoCapture>(vi_config);
     if (!vi->Initialize()) {
