@@ -8,6 +8,7 @@
 
 #include "VideoEncoder.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <thread>
@@ -90,6 +91,59 @@ namespace rmg {
         // 发送帧到编码器
         const auto &frame_info = frame.GetFrameInfo();
         RK_S32 ret = RK_MPI_VENC_SendFrame(config_.chn_id, const_cast<VIDEO_FRAME_INFO_S *>(&frame_info), 1000);
+        if (ret != RK_SUCCESS) {
+            SPDLOG_WARN("RK_MPI_VENC_SendFrame failed: 0x{:08X}", ret);
+            return false;
+        }
+
+        return true;
+    }
+
+    bool VideoEncoder::PushJpegFrame(const YuvFrame &frame) {
+        if (!IsRunning()) {
+            return false;
+        }
+
+        if (!frame.IsValid()) {
+            SPDLOG_WARN("PushJpegFrame: invalid frame");
+            return false;
+        }
+
+        if (config_.codec != CodecType::kJPEG) {
+            SPDLOG_WARN("PushJpegFrame only works for JPEG encoder");
+            return false;
+        }
+
+        // 对于 JPEG 单帧模式，需要动态调整编码器属性以匹配帧的实际分辨率
+        uint32_t frame_width = frame.GetWidth();
+        uint32_t frame_height = frame.GetHeight();
+        uint32_t frame_vir_width = frame.GetVirWidth();
+        uint32_t frame_vir_height = frame.GetVirHeight();
+
+        // 获取当前编码器属性
+        VENC_CHN_ATTR_S chn_attr;
+        std::memset(&chn_attr, 0, sizeof(chn_attr));
+        RK_S32 ret = RK_MPI_VENC_GetChnAttr(config_.chn_id, &chn_attr);
+        if (ret != RK_SUCCESS) {
+            SPDLOG_WARN("RK_MPI_VENC_GetChnAttr failed: 0x{:08X}", ret);
+            return false;
+        }
+
+        // 更新编码器分辨率以匹配当前帧
+        chn_attr.stVencAttr.u32PicWidth = frame_width;
+        chn_attr.stVencAttr.u32PicHeight = frame_height;
+        chn_attr.stVencAttr.u32VirWidth = frame_vir_width;
+        chn_attr.stVencAttr.u32VirHeight = frame_vir_height;
+
+        ret = RK_MPI_VENC_SetChnAttr(config_.chn_id, &chn_attr);
+        if (ret != RK_SUCCESS) {
+            SPDLOG_WARN("RK_MPI_VENC_SetChnAttr failed: 0x{:08X}", ret);
+            return false;
+        }
+
+        // 发送帧到编码器
+        const auto &frame_info = frame.GetFrameInfo();
+        ret = RK_MPI_VENC_SendFrame(config_.chn_id, const_cast<VIDEO_FRAME_INFO_S *>(&frame_info), 1000);
         if (ret != RK_SUCCESS) {
             SPDLOG_WARN("RK_MPI_VENC_SendFrame failed: 0x{:08X}", ret);
             return false;
@@ -205,19 +259,22 @@ namespace rmg {
     void VideoEncoder::GetStreamThread() {
         SPDLOG_DEBUG("GetStreamThread started");
 
-        VENC_STREAM_S stream;
-        std::memset(&stream, 0, sizeof(stream));
-
         // JPEG 单帧模式下，硬件编码器只有在 StartRecvFrame 并发送帧后才会创建
         // 因此需要特殊处理 "hw is no create" 错误（0xA0048010）
         constexpr RK_S32 RK_ERR_VENC_HW_NOT_CREATE = 0xA0048010;
 
         while (running_.load()) {
+            VENC_STREAM_S stream;
+            std::memset(&stream, 0, sizeof(stream));
+            
+            // RK_MPI_VENC_GetStream 会自动为 stream.pstPack 分配/管理内存，
+            // 无需手动分配，直接使用栈上的 stream 对象即可
+            
             // JPEG 单帧模式使用较长超时，避免频繁轮询
-            int32_t timeout_ms = (config_.codec == CodecType::kJPEG) ? 500 : 100;
+            int32_t timeout_ms = (config_.codec == CodecType::kJPEG) ? 200 : 100;
             RK_S32 ret = RK_MPI_VENC_GetStream(config_.chn_id, &stream, timeout_ms);
 
-            if (ret == RK_SUCCESS) {
+            if (ret == RK_SUCCESS && stream.pstPack != nullptr && stream.u32PackCount > 0) {
                 // 创建 EncodedFrame，带自定义释放器（值语义）
                 uint32_t chn_id = config_.chn_id;
                 auto release_cb = [chn_id](VENC_STREAM_S *s) { RK_MPI_VENC_ReleaseStream(chn_id, s); };
@@ -231,9 +288,9 @@ namespace rmg {
 
             } else if (ret == RK_ERR_VENC_HW_NOT_CREATE) {
                 // JPEG 模式下，硬件尚未创建，静默等待
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            } else if (ret != RK_ERR_VENC_BUF_EMPTY) {
-                SPDLOG_WARN("RK_MPI_VENC_GetStream failed: 0x{:08X}", ret);
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            } else if (ret != RK_ERR_VENC_BUF_EMPTY && ret != RK_SUCCESS) {
+                SPDLOG_DEBUG("RK_MPI_VENC_GetStream: 0x{:08X}", ret);
             }
         }
 
@@ -270,6 +327,14 @@ namespace rmg {
         chn_attr.stVencAttr.u32VirHeight = config_.vir_height;
         chn_attr.stVencAttr.u32StreamBufCnt = config_.buf_count;
         chn_attr.stVencAttr.u32BufSize = config_.vir_width * config_.vir_height * 3 / 2;
+
+        // 为 JPEG 模式设置最大分辨率（以支持运行时调整）
+        if (config_.codec == CodecType::kJPEG || config_.codec == CodecType::kMJPEG) {
+            chn_attr.stVencAttr.u32MaxPicWidth = 2560;
+            chn_attr.stVencAttr.u32MaxPicHeight = 1440;
+            // 增加 buf 大小以支持高分辨率 JPEG
+            chn_attr.stVencAttr.u32BufSize = std::max(chn_attr.stVencAttr.u32BufSize, 204800U);
+        }
 
         // 配置码率控制
         ConfigureRateControl(chn_attr);

@@ -221,7 +221,7 @@ int main(int argc, char *argv[]) {
     venc_config.pixel_format = RK_FMT_YUV420SP;
     venc_config.codec = rmg::CodecType::kJPEG;
     venc_config.jpeg_quality = jpeg_quality;
-    venc_config.buf_count = 2;
+    venc_config.buf_count = 4;  // JPEG 模式需要更多缓冲区
 
     rmg::VideoEncoder encoder(venc_config);
 
@@ -297,15 +297,18 @@ int main(int argc, char *argv[]) {
                 continue;
             }
 
+            // 重置保存计数以检测编码完成
+            uint32_t prev_saved = saved_count.load();
+
             // 启动 JPEG 编码器接收一帧
             if (!encoder.StartRecvFrame(1)) {
                 SPDLOG_ERROR("Failed to start receiving frame");
                 continue;
             }
 
-            // 将 YUV 帧发送到编码器
-            if (!encoder.PushYuvFrame(*yuv_frame)) {
-                SPDLOG_ERROR("Failed to push YUV frame to encoder");
+            // 将 YUV 帧发送到 JPEG 编码器（会动态调整编码器属性）
+            if (!encoder.PushJpegFrame(*yuv_frame)) {
+                SPDLOG_ERROR("Failed to push YUV frame to JPEG encoder");
                 continue;
             }
 
@@ -313,8 +316,14 @@ int main(int argc, char *argv[]) {
             last_capture_time = now;
             SPDLOG_INFO("Capture #{} triggered", capture_attempt);
 
-            // 等待编码完成（回调会保存文件）
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            // 等待编码完成（同步方式：等待 saved_count 增加）
+            for (int wait_count = 0; wait_count < 50 && g_running.load(); ++wait_count) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                if (saved_count.load() > prev_saved) {
+                    SPDLOG_DEBUG("JPEG encoding completed");
+                    break;
+                }
+            }
 
             // 非连续模式下检查是否已达到目标数量
             if (!continuous_mode && capture_attempt >= capture_count) {

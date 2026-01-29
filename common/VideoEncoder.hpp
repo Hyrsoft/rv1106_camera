@@ -99,6 +99,16 @@ namespace rmg {
         bool PushYuvFrame(const YuvFrame &frame);
 
         /**
+         * @brief 推送 YUV 帧进行 JPEG 单帧编码
+         * 
+         * 专门用于 JPEG 单帧模式，会动态调整编码器属性以匹配帧的分辨率
+         * 
+         * @param frame YUV 帧引用
+         * @return true 推送成功
+         */
+        bool PushJpegFrame(const YuvFrame &frame);
+
+        /**
          * @brief 设置编码数据回调
          * @param callback 回调函数
          */
