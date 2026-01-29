@@ -259,38 +259,50 @@ namespace rmg {
     void VideoEncoder::GetStreamThread() {
         SPDLOG_DEBUG("GetStreamThread started");
 
-        // JPEG 单帧模式下，硬件编码器只有在 StartRecvFrame 并发送帧后才会创建
-        // 因此需要特殊处理 "hw is no create" 错误（0xA0048010）
         constexpr RK_S32 RK_ERR_VENC_HW_NOT_CREATE = 0xA0048010;
 
         while (running_.load()) {
+            // 为包元数据分配堆内存（关键修复）
+            // RV1106 JPEG 编码通常只有 1 个包，H.264/H.265 可能有多个
+            VENC_PACK_S* pack_buffer = new VENC_PACK_S[1];
+
             VENC_STREAM_S stream;
             std::memset(&stream, 0, sizeof(stream));
-            
-            // RK_MPI_VENC_GetStream 会自动为 stream.pstPack 分配/管理内存，
-            // 无需手动分配，直接使用栈上的 stream 对象即可
-            
-            // JPEG 单帧模式使用较长超时，避免频繁轮询
+            stream.pstPack = pack_buffer;
+            stream.u32PackCount = 1;
+
             int32_t timeout_ms = (config_.codec == CodecType::kJPEG) ? 200 : 100;
             RK_S32 ret = RK_MPI_VENC_GetStream(config_.chn_id, &stream, timeout_ms);
 
             if (ret == RK_SUCCESS && stream.pstPack != nullptr && stream.u32PackCount > 0) {
-                // 创建 EncodedFrame，带自定义释放器（值语义）
+                // 创建 EncodedFrame，使用 Lambda 捕获 pack_buffer 指针进行释放
                 uint32_t chn_id = config_.chn_id;
-                auto release_cb = [chn_id](VENC_STREAM_S *s) { RK_MPI_VENC_ReleaseStream(chn_id, s); };
 
+                // 定义 ReleaseCallback：既释放 MPI 数据，也释放我们分配的元数据
+                auto release_cb = [chn_id, pack_buffer](VENC_STREAM_S *s) {
+                    // 1. 告诉 MPI 释放底层的数据 buffer (pMbBlk 等)
+                    RK_MPI_VENC_ReleaseStream(chn_id, s);
+                    // 2. 释放我们自己分配的元数据 struct
+                    delete[] pack_buffer;
+                };
+
+                // EncodedFrame 会接管 stream 结构体（浅拷贝），
+                // 它的 pstPack 成员指向堆上的 pack_buffer，这是安全的。
                 EncodedFrame encoded_frame(stream, config_.chn_id, release_cb);
 
-                // 调用回调（移动传递）
                 if (encoded_callback_) {
                     encoded_callback_(std::move(encoded_frame));
                 }
+            } else {
+                // 获取失败，必须立即手动释放 pack_buffer
+                delete[] pack_buffer;
 
-            } else if (ret == RK_ERR_VENC_HW_NOT_CREATE) {
-                // JPEG 模式下，硬件尚未创建，静默等待
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            } else if (ret != RK_ERR_VENC_BUF_EMPTY && ret != RK_SUCCESS) {
-                SPDLOG_DEBUG("RK_MPI_VENC_GetStream: 0x{:08X}", ret);
+                if (ret == RK_ERR_VENC_HW_NOT_CREATE) {
+                    // JPEG 模式下，等待第一帧数据到来
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                } else if (ret != RK_ERR_VENC_BUF_EMPTY && ret != RK_SUCCESS) {
+                    SPDLOG_DEBUG("RK_MPI_VENC_GetStream: 0x{:08X}", ret);
+                }
             }
         }
 
@@ -339,9 +351,15 @@ namespace rmg {
         // 配置码率控制
         ConfigureRateControl(chn_attr);
 
-        // 设置 GOP
-        chn_attr.stGopAttr.enGopMode = VENC_GOPMODE_NORMALP;
-        chn_attr.stGopAttr.s32VirIdrLen = config_.gop;
+        // 设置 GOP (仅针对 H.264/H.265，JPEG 不需要)
+        if (config_.codec == CodecType::kJPEG || config_.codec == CodecType::kMJPEG) {
+            // JPEG 是单帧编码，不有 GOP 概念，清零 GOP 属性
+            std::memset(&chn_attr.stGopAttr, 0, sizeof(VENC_GOP_ATTR_S));
+        } else {
+            // H.264/H.265 设置 GOP
+            chn_attr.stGopAttr.enGopMode = VENC_GOPMODE_NORMALP;
+            chn_attr.stGopAttr.s32VirIdrLen = config_.gop;
+        }
 
         // 创建通道
         RK_S32 ret = RK_MPI_VENC_CreateChn(config_.chn_id, &chn_attr);
