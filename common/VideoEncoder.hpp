@@ -34,6 +34,7 @@ namespace rmg {
         kH264, ///< H.264/AVC
         kH265, ///< H.265/HEVC
         kMJPEG, ///< Motion JPEG
+        kJPEG, ///< JPEG 单帧编码
     };
 
     /**
@@ -69,6 +70,7 @@ namespace rmg {
             RateControlMode rc_mode = RateControlMode::kCBR; ///< 码率控制模式
             uint32_t profile = 100; ///< 编码 profile (100=High for H.264)
             uint32_t buf_count = 4; ///< 输出缓冲区数量
+            uint32_t jpeg_quality = 80; ///< JPEG 质量 (1-99, 仅 JPEG/MJPEG 有效)
         };
 
         /**
@@ -126,6 +128,33 @@ namespace rmg {
          * @return true 设置成功
          */
         [[nodiscard]] bool SetFrameRate(uint32_t fps);
+
+        /**
+         * @brief 设置 JPEG 质量
+         * @param quality JPEG 质量 (1-99)
+         * @return true 设置成功
+         */
+        [[nodiscard]] bool SetJpegQuality(uint32_t quality);
+
+        /**
+         * @brief 启动接收帧（用于 JPEG 单帧编码模式）
+         * @param recv_count 接收帧数量，-1 表示持续接收
+         * @return true 启动成功
+         */
+        [[nodiscard]] bool StartRecvFrame(int32_t recv_count = -1);
+
+        /**
+         * @brief 停止接收帧
+         * @return true 停止成功
+         */
+        [[nodiscard]] bool StopRecvFrame();
+
+        /**
+         * @brief 检查是否为 JPEG/MJPEG 编码器
+         */
+        [[nodiscard]] bool IsJpegEncoder() const {
+            return config_.codec == CodecType::kJPEG || config_.codec == CodecType::kMJPEG;
+        }
 
         /**
          * @brief 获取配置

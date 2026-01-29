@@ -8,7 +8,9 @@
 
 #include "VideoEncoder.hpp"
 
+#include <chrono>
 #include <cstring>
+#include <thread>
 
 #include <spdlog/spdlog.h>
 
@@ -206,8 +208,14 @@ namespace rmg {
         VENC_STREAM_S stream;
         std::memset(&stream, 0, sizeof(stream));
 
+        // JPEG 单帧模式下，硬件编码器只有在 StartRecvFrame 并发送帧后才会创建
+        // 因此需要特殊处理 "hw is no create" 错误（0xA0048010）
+        constexpr RK_S32 RK_ERR_VENC_HW_NOT_CREATE = 0xA0048010;
+
         while (running_.load()) {
-            RK_S32 ret = RK_MPI_VENC_GetStream(config_.chn_id, &stream, 100);
+            // JPEG 单帧模式使用较长超时，避免频繁轮询
+            int32_t timeout_ms = (config_.codec == CodecType::kJPEG) ? 500 : 100;
+            RK_S32 ret = RK_MPI_VENC_GetStream(config_.chn_id, &stream, timeout_ms);
 
             if (ret == RK_SUCCESS) {
                 // 创建 EncodedFrame，带自定义释放器（值语义）
@@ -221,6 +229,9 @@ namespace rmg {
                     encoded_callback_(std::move(encoded_frame));
                 }
 
+            } else if (ret == RK_ERR_VENC_HW_NOT_CREATE) {
+                // JPEG 模式下，硬件尚未创建，静默等待
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             } else if (ret != RK_ERR_VENC_BUF_EMPTY) {
                 SPDLOG_WARN("RK_MPI_VENC_GetStream failed: 0x{:08X}", ret);
             }
@@ -246,6 +257,9 @@ namespace rmg {
             case CodecType::kMJPEG:
                 chn_attr.stVencAttr.enType = RK_VIDEO_ID_MJPEG;
                 break;
+            case CodecType::kJPEG:
+                chn_attr.stVencAttr.enType = RK_VIDEO_ID_JPEG;
+                break;
         }
 
         // 设置基本属性
@@ -269,6 +283,28 @@ namespace rmg {
         if (ret != RK_SUCCESS) {
             SPDLOG_ERROR("RK_MPI_VENC_CreateChn failed: 0x{:08X}", ret);
             return false;
+        }
+
+        // 如果是 JPEG/MJPEG，设置质量参数
+        if (config_.codec == CodecType::kJPEG || config_.codec == CodecType::kMJPEG) {
+            VENC_JPEG_PARAM_S stJpegParam;
+            std::memset(&stJpegParam, 0, sizeof(stJpegParam));
+            stJpegParam.u32Qfactor = config_.jpeg_quality;
+            ret = RK_MPI_VENC_SetJpegParam(config_.chn_id, &stJpegParam);
+            if (ret != RK_SUCCESS) {
+                SPDLOG_WARN("RK_MPI_VENC_SetJpegParam failed: 0x{:08X}", ret);
+            }
+        }
+
+        // 对于非 JPEG 单帧模式，默认启动接收帧
+        if (config_.codec != CodecType::kJPEG) {
+            VENC_RECV_PIC_PARAM_S stRecvParam;
+            std::memset(&stRecvParam, 0, sizeof(stRecvParam));
+            stRecvParam.s32RecvPicNum = -1; // 持续接收
+            ret = RK_MPI_VENC_StartRecvFrame(config_.chn_id, &stRecvParam);
+            if (ret != RK_SUCCESS) {
+                SPDLOG_WARN("RK_MPI_VENC_StartRecvFrame failed: 0x{:08X}", ret);
+            }
         }
 
         channel_created_ = true;
@@ -344,7 +380,63 @@ namespace rmg {
                 rc_attr.stMjpegCbr.fr32DstFrameRateNum = config_.fps;
                 rc_attr.stMjpegCbr.fr32DstFrameRateDen = 1;
                 break;
+
+            case CodecType::kJPEG:
+                // JPEG 单帧编码不需要码率控制
+                break;
         }
+    }
+
+    bool VideoEncoder::SetJpegQuality(uint32_t quality) {
+        if (config_.codec != CodecType::kJPEG && config_.codec != CodecType::kMJPEG) {
+            SPDLOG_WARN("SetJpegQuality only works for JPEG/MJPEG encoder");
+            return false;
+        }
+
+        if (quality < 1 || quality > 99) {
+            SPDLOG_ERROR("JPEG quality must be between 1 and 99, got {}", quality);
+            return false;
+        }
+
+        VENC_JPEG_PARAM_S stJpegParam;
+        std::memset(&stJpegParam, 0, sizeof(stJpegParam));
+        stJpegParam.u32Qfactor = quality;
+
+        RK_S32 ret = RK_MPI_VENC_SetJpegParam(config_.chn_id, &stJpegParam);
+        if (ret != RK_SUCCESS) {
+            SPDLOG_ERROR("RK_MPI_VENC_SetJpegParam failed: 0x{:08X}", ret);
+            return false;
+        }
+
+        config_.jpeg_quality = quality;
+        SPDLOG_INFO("JPEG quality set to {}", quality);
+        return true;
+    }
+
+    bool VideoEncoder::StartRecvFrame(int32_t recv_count) {
+        VENC_RECV_PIC_PARAM_S stRecvParam;
+        std::memset(&stRecvParam, 0, sizeof(stRecvParam));
+        stRecvParam.s32RecvPicNum = recv_count;
+
+        RK_S32 ret = RK_MPI_VENC_StartRecvFrame(config_.chn_id, &stRecvParam);
+        if (ret != RK_SUCCESS) {
+            SPDLOG_ERROR("RK_MPI_VENC_StartRecvFrame failed: 0x{:08X}", ret);
+            return false;
+        }
+
+        SPDLOG_DEBUG("Started receiving {} frame(s)", recv_count);
+        return true;
+    }
+
+    bool VideoEncoder::StopRecvFrame() {
+        RK_S32 ret = RK_MPI_VENC_StopRecvFrame(config_.chn_id);
+        if (ret != RK_SUCCESS) {
+            SPDLOG_ERROR("RK_MPI_VENC_StopRecvFrame failed: 0x{:08X}", ret);
+            return false;
+        }
+
+        SPDLOG_DEBUG("Stopped receiving frames");
+        return true;
     }
 
 } // namespace rmg
